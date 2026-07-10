@@ -1,0 +1,27 @@
+[package]
+name = "layeredfs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 1. Core Kernel Communication
+fuser = "0.14"     # The Rust bridge to the FUSE kernel module
+libc = "0.2"       # Required to send standard POSIX error codes (like ENOENT)
+
+# 2. State & Database
+rusqlite = "0.31"  # ACID-compliant SQLite interactions
+
+# 3. Memory Management (Phase 4)
+lru = "0.12"       # Least-Recently-Used caching for paths and blocks
+
+# 4. Agent API & Concurrency (Phase 5)
+tokio = { version = "1.0", features = ["full"] } # Async runtime for the API
+serde = { version = "1.0", features = ["derive"] } # Data serialization
+serde_json = "1.0" # JSON handling for LLM agents
+
+# 5. Debugging (Absolutely critical for FUSE development)
+log = "0.4"
+env_logger = "0.11"
+
+# Dynamic timestamps
+chrono = "0.4"
