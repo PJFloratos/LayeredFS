@@ -2,7 +2,7 @@ mod database;
 mod fuse;
 
 use database::LayeredDb;
-use fuse::fs::LayeredFsEngine;
+use fuse::engine::LayeredFsEngine;
 use rusqlite::Result;
 use std::fs;
 use std::sync::{Arc, Mutex};
