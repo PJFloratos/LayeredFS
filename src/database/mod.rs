@@ -33,7 +33,7 @@ impl LayeredDb {
 
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS inodes (
-                inode_id INTEGER PRIMARY KEY,
+                inode_id INTEGER,
                 layer_id TEXT,
                 parent_id INTEGER,
                 name TEXT,
@@ -41,7 +41,8 @@ impl LayeredDb {
                 size INTEGER,
                 permissions INTEGER,
                 mtime TEXT,
-                semantic_summary TEXT
+                semantic_summary TEXT,
+                PRIMARY KEY (inode_id, layer_id)
             )",
             [],
         )?;
@@ -76,7 +77,17 @@ impl LayeredDb {
         };
         self.insert_layer(&base_layer)?;
 
-        // Seed Root Inode
+        // Seed Active Layer ---
+        let active_layer = Layer {
+            layer_id: "active".to_string(),
+            parent_layer_id: Some("base".to_string()),
+            priority: 1,        // Higher priority shadows the base layer
+            is_readonly: false, // This layer accepts writes
+            created_at: current_time.clone(),
+        };
+        self.insert_layer(&active_layer)?;
+
+        // Seed Root Inode (Inode 1)
         let root_inode = Inode {
             inode_id: 1,
             layer_id: "base".to_string(),
@@ -90,11 +101,9 @@ impl LayeredDb {
         };
         self.insert_inode(&root_inode)?;
 
-        // --- Seed hello.txt (Inode 2) ---
-
+        // Seed hello.txt (Inode 2)
         let file_text = b"Hello from SQLite!\n"; // The 'b' prefix makes it a byte array
         let current_time = Utc::now().to_rfc3339();
-
         let hello_inode = Inode {
             inode_id: 2,
             layer_id: "base".to_string(),
@@ -157,11 +166,29 @@ impl LayeredDb {
         Ok(())
     }
 
+    pub fn insert_block(&self, block: &Block) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO blocks (inode_id, layer_id, block_index, data)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                block.inode_id,
+                block.layer_id,
+                block.block_index,
+                block.data,
+            ],
+        )?;
+        Ok(())
+    }
+
     // 5. Fetch an Inode by its ID
     pub fn get_inode(&self, inode_id: u64) -> Result<Inode> {
-        self.conn.query_row(
-            "SELECT inode_id, layer_id, parent_id, name, file_type, size, permissions, mtime, semantic_summary
-             FROM inodes WHERE inode_id = ?1",
+        let inode = self.conn.query_row(
+            "SELECT i.inode_id, i.layer_id, i.parent_id, i.name, i.file_type, i.size, i.permissions, i.mtime, i.semantic_summary
+             FROM inodes i
+             JOIN layers l ON i.layer_id = l.layer_id
+             WHERE i.inode_id = ?1
+             ORDER BY l.priority DESC
+             LIMIT 1",
             params![inode_id],
             |row| {
                 Ok(Inode {
@@ -171,19 +198,30 @@ impl LayeredDb {
                     name: row.get(3)?,
                     file_type: row.get(4)?,
                     size: row.get(5)?,
-                    permissions: row.get(6)?, // SQLite stores this as INTEGER, Rust maps it to u16
+                    permissions: row.get(6)?,
                     mtime: row.get(7)?,
                     semantic_summary: row.get(8)?,
                 })
             },
-        )
+        )?;
+
+        // If the highest priority layer is a tombstone, it's deleted!
+        if inode.file_type == "tombstone" {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(inode)
     }
 
     // Fetch an Inode by its Parent ID and Name (Used for `lookup`)
     pub fn get_inode_by_name(&self, parent_id: u64, name: &str) -> Result<Inode> {
-        self.conn.query_row(
-            "SELECT inode_id, layer_id, parent_id, name, file_type, size, permissions, mtime, semantic_summary
-             FROM inodes WHERE parent_id = ?1 AND name = ?2",
+        let inode = self.conn.query_row(
+            // Order by priority DESC and LIMIT 1 to get the topmost layer's version
+            "SELECT i.inode_id, i.layer_id, i.parent_id, i.name, i.file_type, i.size, i.permissions, i.mtime, i.semantic_summary
+             FROM inodes i
+             JOIN layers l ON i.layer_id = l.layer_id
+             WHERE i.parent_id = ?1 AND i.name = ?2
+             ORDER BY l.priority DESC
+             LIMIT 1",
             params![parent_id, name],
             |row| {
                 Ok(Inode {
@@ -198,16 +236,38 @@ impl LayeredDb {
                     semantic_summary: row.get(8)?,
                 })
             },
+        )?;
+
+        // If the topmost version is a tombstone, pretend it doesn't exist!
+        if inode.file_type == "tombstone" {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+
+        Ok(inode)
+    }
+
+    pub fn get_next_inode_id(&self) -> Result<u64> {
+        // COALESCE handles the case where the table is empty by defaulting to 0, then adding 1.
+        self.conn.query_row(
+            "SELECT COALESCE(MAX(inode_id), 0) + 1 FROM inodes",
+            [],
+            |row| row.get(0),
         )
     }
 
     // 6. Fetch children of a directory
     pub fn get_directory_children(&self, parent_id: u64) -> Result<Vec<Inode>> {
-        // We use inode_id != parent_id to prevent the root folder (which is its own parent)
-        // from being returned as a child of itself.
+        // We use a SQLite Window Function (ROW_NUMBER) to partition by name and sort by priority.
+        // This ensures if a file exists in 'active' and 'base', we only look at the 'active' one.
         let mut stmt = self.conn.prepare(
             "SELECT inode_id, layer_id, parent_id, name, file_type, size, permissions, mtime, semantic_summary
-             FROM inodes WHERE parent_id = ?1 AND inode_id != ?1"
+             FROM (
+                 SELECT i.*, ROW_NUMBER() OVER (PARTITION BY i.name ORDER BY l.priority DESC) as rn
+                 FROM inodes i
+                 JOIN layers l ON i.layer_id = l.layer_id
+                 WHERE i.parent_id = ?1 AND i.inode_id != ?1
+             )
+             WHERE rn = 1 AND file_type != 'tombstone'"
         )?;
 
         let inode_iter = stmt.query_map(params![parent_id], |row| {
@@ -233,20 +293,6 @@ impl LayeredDb {
         Ok(children)
     }
 
-    pub fn insert_block(&self, block: &Block) -> Result<()> {
-        self.conn.execute(
-            "INSERT INTO blocks (inode_id, layer_id, block_index, data)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                block.inode_id,
-                block.layer_id,
-                block.block_index,
-                block.data,
-            ],
-        )?;
-        Ok(())
-    }
-
     pub fn get_block(&self, inode_id: u64, block_index: i64) -> Result<Block> {
         self.conn.query_row(
             "SELECT inode_id, layer_id, block_index, data
@@ -261,5 +307,59 @@ impl LayeredDb {
                 })
             },
         )
+    }
+
+    pub fn update_inode(&self, inode: &Inode) -> Result<()> {
+        self.conn.execute(
+            "UPDATE inodes SET size = ?1, permissions = ?2, mtime = ?3
+             WHERE inode_id = ?4 AND layer_id = ?5",
+            params![
+                inode.size,
+                inode.permissions,
+                inode.mtime,
+                inode.inode_id,
+                inode.layer_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn upsert_block(&self, block: &Block) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO blocks (inode_id, layer_id, block_index, data)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                block.inode_id,
+                block.layer_id,
+                block.block_index,
+                block.data,
+            ],
+        )?;
+        Ok(())
+    }
+
+    // The Copy-on-Write Engine ---
+    pub fn copy_on_write(&self, inode_id: u64) -> Result<Inode> {
+        let mut inode = self.get_inode(inode_id)?;
+
+        // 1. If it's already in the active layer, it's safe to modify.
+        if inode.layer_id == "active" {
+            return Ok(inode);
+        }
+
+        // 2. If it's in the base layer, copy it up to the active layer.
+        inode.layer_id = "active".to_string();
+        inode.mtime = chrono::Utc::now().to_rfc3339();
+        self.insert_inode(&inode)?; // Insert the exact duplicate row into the active layer
+
+        // 3. Copy all of its data blocks up to the active layer too!
+        self.conn.execute(
+            "INSERT INTO blocks (inode_id, layer_id, block_index, data)
+             SELECT inode_id, 'active', block_index, data
+             FROM blocks WHERE inode_id = ?1 AND layer_id = 'base'",
+            params![inode_id],
+        )?;
+
+        Ok(inode)
     }
 }

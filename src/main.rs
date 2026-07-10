@@ -37,10 +37,7 @@ fn main() -> Result<()> {
     };
 
     // 6. Mount the filesystem
-    let options = vec![
-        fuser::MountOption::RO,
-        fuser::MountOption::FSName("layeredfs".to_string()),
-    ];
+    let options = vec![fuser::MountOption::FSName("layeredfs".to_string())];
 
     match fuser::mount2(fs_engine, mountpoint, &options) {
         Ok(_) => println!("Filesystem unmounted successfully."),
