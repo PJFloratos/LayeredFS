@@ -13,7 +13,7 @@ pub struct LayeredDb {
 impl LayeredDb {
     // Initialize the database connection
     pub fn new() -> Result<Self> {
-        let conn = Connection::open_in_memory()?;
+        let conn = Connection::open("layeredfs.db")?;
         Ok(LayeredDb { conn })
     }
 }

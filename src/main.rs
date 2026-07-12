@@ -5,6 +5,7 @@ use database::LayeredDb;
 use fuse::engine::LayeredFsEngine;
 use rusqlite::Result;
 use std::fs;
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 
 fn main() -> Result<()> {
@@ -20,6 +21,11 @@ fn main() -> Result<()> {
 
     // 3. Set up the FUSE mount point
     let mountpoint = "/tmp/layeredfs_mount";
+
+    // Attempt to unmount any existing zombie mounts before we begin.
+    // Ignore the result, because if it fails, it just means the directory wasn't mounted!
+    let _ = Command::new("umount").arg("-l").arg(mountpoint).status();
+
     if let Err(e) = fs::create_dir_all(mountpoint) {
         println!("Failed to create mountpoint: {}", e);
         return Ok(());

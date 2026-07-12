@@ -47,8 +47,23 @@ impl LayeredDb {
     }
 
     pub fn bootstrap_initial_state(&self) -> Result<()> {
+        // 1. Create tables if they don't exist
         self.init_schema()?;
 
+        // 2. State Detection: Check if the "base" layer already exists
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM layers WHERE layer_id = 'base'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        if count > 0 {
+            // The database is already seeded
+            // We gracefully exit the bootstrap process so we don't crash.
+            return Ok(());
+        }
+
+        // 3. If empty, proceed with the original seeding logic
         let current_time = Utc::now().to_rfc3339();
 
         let base_layer = Layer {
