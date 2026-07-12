@@ -1,6 +1,8 @@
 # Intenral Doc files
 RustDocs/
 
+# LayeredFS databse file
+layeredfs.db
 
 # Added by cargo
 /target
