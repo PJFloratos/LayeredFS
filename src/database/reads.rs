@@ -3,6 +3,47 @@ use crate::database::LayeredDb;
 use rusqlite::{params, Result};
 
 impl LayeredDb {
+    pub fn execute_raw_sql(&self, query: &str) -> Result<Vec<String>> {
+        // 1. Prepare the statement dynamically
+        let mut stmt = self.conn.prepare(query)?;
+        let column_count = stmt.column_count();
+
+        // 2. If it's a mutation query (INSERT, UPDATE, DELETE) with no returning columns
+        if column_count == 0 {
+            let changes = self.conn.execute(query, [])?;
+            return Ok(vec![format!("SUCCESS: {} rows affected.", changes)]);
+        }
+
+        // 3. If it's a SELECT query, dynamically fetch column names
+        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let header = column_names.join(" | ");
+
+        let mut results = vec![header.clone()];
+        results.push("-".repeat(header.len())); // Create a visual separator line
+
+        // 4. Iterate over the rows and dynamically parse the data types
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let mut row_strings = Vec::new();
+            for i in 0..column_count {
+                let val_ref = row.get_ref(i)?;
+
+                // Match the SQLite type to a printable Rust String
+                let val_str = match val_ref {
+                    rusqlite::types::ValueRef::Null => "NULL".to_string(),
+                    rusqlite::types::ValueRef::Integer(i) => i.to_string(),
+                    rusqlite::types::ValueRef::Real(f) => f.to_string(),
+                    rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+                    rusqlite::types::ValueRef::Blob(b) => format!("<BLOB {} bytes>", b.len()),
+                };
+                row_strings.push(val_str);
+            }
+            results.push(row_strings.join(" | "));
+        }
+
+        Ok(results)
+    }
+
     pub fn get_inode(&self, inode_id: u64) -> Result<Inode> {
         let inode = self.conn.query_row(
             "SELECT i.inode_id, i.layer_id, i.parent_id, i.name, i.file_type, i.size, i.permissions, i.mtime, i.semantic_summary

@@ -100,4 +100,40 @@ impl LayeredDb {
 
         Ok(inode)
     }
+
+    pub fn commit(&self, commit_name: &str) -> Result<()> {
+        // 1. Get the current active layer's priority[cite: 14]
+        let current_priority: i32 = self.conn.query_row(
+            "SELECT priority FROM layers WHERE layer_id = 'active'",
+            [],
+            |row| row.get(0),
+        )?;
+
+        // 2. Rename 'active' to the new commit name across all tables[cite: 14]
+        self.conn.execute(
+            "UPDATE layers SET layer_id = ?1, is_readonly = true WHERE layer_id = 'active'",
+            params![commit_name],
+        )?;
+        self.conn.execute(
+            "UPDATE inodes SET layer_id = ?1 WHERE layer_id = 'active'",
+            params![commit_name],
+        )?;
+        self.conn.execute(
+            "UPDATE blocks SET layer_id = ?1 WHERE layer_id = 'active'",
+            params![commit_name],
+        )?;
+
+        // 3. Create a brand new empty 'active' layer sitting on top of the commit[cite: 14]
+        let new_active = Layer {
+            layer_id: "active".to_string(),
+            parent_layer_id: Some(commit_name.to_string()),
+            priority: current_priority + 1, // Must be higher so it shadows the commit!
+            is_readonly: false,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        };
+
+        self.insert_layer(&new_active)?;
+
+        Ok(())
+    }
 }

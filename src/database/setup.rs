@@ -122,4 +122,13 @@ impl LayeredDb {
 
         Ok(())
     }
+
+    pub fn wipe_all_data(&self) -> Result<()> {
+        // Drop tables in reverse order of dependencies if you ever add foreign keys,
+        // but for now any order works!
+        self.conn.execute("DROP TABLE IF EXISTS blocks;", [])?;
+        self.conn.execute("DROP TABLE IF EXISTS inodes;", [])?;
+        self.conn.execute("DROP TABLE IF EXISTS layers;", [])?;
+        Ok(())
+    }
 }
