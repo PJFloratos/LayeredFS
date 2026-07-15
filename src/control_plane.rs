@@ -74,10 +74,45 @@ pub fn spawn(db: Arc<Mutex<LayeredDb>>) {
                     } else {
                         println!("Reset aborted.");
                     }
+                } else if cmd == "revert" {
+                    print!("Are you sure you want to discard all uncommitted changes? (y/N): ");
+                    io::stdout().flush().unwrap();
+
+                    let mut confirmation = String::new();
+                    if stdin.read_line(&mut confirmation).is_ok()
+                        && confirmation.trim().to_lowercase() == "y"
+                    {
+                        let db_lock = db.lock().unwrap();
+                        match db_lock.revert_active() {
+                            Ok(_) => println!(
+                                "SUCCESS: Active layer wiped. Returned to last commit state."
+                            ),
+                            Err(e) => println!("ERROR: Revert failed: {}", e),
+                        }
+                    } else {
+                        println!("Revert aborted.");
+                    }
+                } else if cmd.starts_with("checkout ") {
+                    let layer_name = cmd.trim_start_matches("checkout ").trim();
+                    if layer_name.is_empty() {
+                        println!("Error: Layer name cannot be empty.");
+                        continue;
+                    }
+
+                    // We need a mutable lock to change the head_priority
+                    let mut db_lock = db.lock().unwrap();
+                    match db_lock.checkout(layer_name) {
+                        Ok(_) => println!("SUCCESS: HEAD moved to '{}'", layer_name),
+                        Err(_) => println!("ERROR: Layer '{}' not found.", layer_name),
+                    }
                 } else if cmd == "help" {
                     println!("Available commands:");
                     println!("  commit <name>   - Freezes the active layer and starts a new one.");
                     println!("  sql <query>     - Executes raw SQL against the database.");
+                    println!(
+                        "  revert          - Discards all uncommitted changes in the active layer."
+                    );
+                    println!("  checkout <name> - Time-travels the filesystem to view a specific commit.");
                     println!("  reset           - Wipes all data and returns to a clean slate.");
                 } else if !cmd.is_empty() {
                     println!("Unknown command. Type 'help'.");

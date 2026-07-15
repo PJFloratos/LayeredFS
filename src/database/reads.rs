@@ -3,45 +3,9 @@ use crate::database::LayeredDb;
 use rusqlite::{params, Result};
 
 impl LayeredDb {
-    pub fn execute_raw_sql(&self, query: &str) -> Result<Vec<String>> {
-        // 1. Prepare the statement dynamically
-        let mut stmt = self.conn.prepare(query)?;
-        let column_count = stmt.column_count();
-
-        // 2. If it's a mutation query (INSERT, UPDATE, DELETE) with no returning columns
-        if column_count == 0 {
-            let changes = self.conn.execute(query, [])?;
-            return Ok(vec![format!("SUCCESS: {} rows affected.", changes)]);
-        }
-
-        // 3. If it's a SELECT query, dynamically fetch column names
-        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
-        let header = column_names.join(" | ");
-
-        let mut results = vec![header.clone()];
-        results.push("-".repeat(header.len())); // Create a visual separator line
-
-        // 4. Iterate over the rows and dynamically parse the data types
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let mut row_strings = Vec::new();
-            for i in 0..column_count {
-                let val_ref = row.get_ref(i)?;
-
-                // Match the SQLite type to a printable Rust String
-                let val_str = match val_ref {
-                    rusqlite::types::ValueRef::Null => "NULL".to_string(),
-                    rusqlite::types::ValueRef::Integer(i) => i.to_string(),
-                    rusqlite::types::ValueRef::Real(f) => f.to_string(),
-                    rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
-                    rusqlite::types::ValueRef::Blob(b) => format!("<BLOB {} bytes>", b.len()),
-                };
-                row_strings.push(val_str);
-            }
-            results.push(row_strings.join(" | "));
-        }
-
-        Ok(results)
+    // Helper to get the current limit of our time machine
+    fn get_max_priority(&self) -> i32 {
+        self.head_priority.unwrap_or(i32::MAX)
     }
 
     pub fn get_inode(&self, inode_id: u64) -> Result<Inode> {
@@ -148,9 +112,13 @@ impl LayeredDb {
 
     pub fn get_block(&self, inode_id: u64, block_index: i64) -> Result<Block> {
         self.conn.query_row(
-            "SELECT inode_id, layer_id, block_index, data
-             FROM blocks WHERE inode_id = ?1 AND block_index = ?2",
-            params![inode_id, block_index],
+            "SELECT b.inode_id, b.layer_id, b.block_index, b.data
+             FROM blocks b
+             JOIN layers l ON b.layer_id = l.layer_id
+             WHERE b.inode_id = ?1 AND b.block_index = ?2 AND l.priority <= ?3
+             ORDER BY l.priority DESC
+             LIMIT 1",
+            params![inode_id, block_index, self.get_max_priority()],
             |row| {
                 Ok(Block {
                     inode_id: row.get(0)?,
@@ -160,5 +128,46 @@ impl LayeredDb {
                 })
             },
         )
+    }
+
+    pub fn execute_raw_sql(&self, query: &str) -> Result<Vec<String>> {
+        // 1. Prepare the statement dynamically
+        let mut stmt = self.conn.prepare(query)?;
+        let column_count = stmt.column_count();
+
+        // 2. If it's a mutation query (INSERT, UPDATE, DELETE) with no returning columns
+        if column_count == 0 {
+            let changes = self.conn.execute(query, [])?;
+            return Ok(vec![format!("SUCCESS: {} rows affected.", changes)]);
+        }
+
+        // 3. If it's a SELECT query, dynamically fetch column names
+        let column_names: Vec<String> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+        let header = column_names.join(" | ");
+
+        let mut results = vec![header.clone()];
+        results.push("-".repeat(header.len())); // Create a visual separator line
+
+        // 4. Iterate over the rows and dynamically parse the data types
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let mut row_strings = Vec::new();
+            for i in 0..column_count {
+                let val_ref = row.get_ref(i)?;
+
+                // Match the SQLite type to a printable Rust String
+                let val_str = match val_ref {
+                    rusqlite::types::ValueRef::Null => "NULL".to_string(),
+                    rusqlite::types::ValueRef::Integer(i) => i.to_string(),
+                    rusqlite::types::ValueRef::Real(f) => f.to_string(),
+                    rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into_owned(),
+                    rusqlite::types::ValueRef::Blob(b) => format!("<BLOB {} bytes>", b.len()),
+                };
+                row_strings.push(val_str);
+            }
+            results.push(row_strings.join(" | "));
+        }
+
+        Ok(results)
     }
 }

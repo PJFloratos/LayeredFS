@@ -136,4 +136,34 @@ impl LayeredDb {
 
         Ok(())
     }
+
+    pub fn revert_active(&self) -> Result<()> {
+        // 1. Delete all raw data blocks tied to the active layer
+        self.conn
+            .execute("DELETE FROM blocks WHERE layer_id = 'active'", [])?;
+
+        // 2. Delete all metadata (inodes) tied to the active layer
+        self.conn
+            .execute("DELETE FROM inodes WHERE layer_id = 'active'", [])?;
+
+        // Note: We intentionally DO NOT delete the 'active' row from the 'layers' table.
+        // We just emptied its contents so it acts as a blank slate again!
+        Ok(())
+    }
+
+    pub fn checkout(&mut self, target_layer: &str) -> Result<()> {
+        if target_layer == "latest" || target_layer == "active" {
+            self.head_priority = None;
+            return Ok(());
+        }
+
+        let priority: i32 = self.conn.query_row(
+            "SELECT priority FROM layers WHERE layer_id = ?1",
+            rusqlite::params![target_layer],
+            |row| row.get(0),
+        )?;
+
+        self.head_priority = Some(priority);
+        Ok(())
+    }
 }
